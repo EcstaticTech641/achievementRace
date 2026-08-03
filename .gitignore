@@ -1,0 +1,19 @@
+# Maven target directory
+target/
+
+# IDE files
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+
+# OS & Log files
+.DS_Store
+Thumbs.db
+*.log
+
+# Temp files
+scratch/
+*.tmp

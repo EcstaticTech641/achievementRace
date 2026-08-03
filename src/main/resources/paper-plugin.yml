@@ -1,0 +1,9 @@
+name: rga-achievementrace
+version: 1.0.0-RGA
+main: com.ronlab.achievementrace.AchievementRacePlugin
+api-version: '26.2'
+dependencies:
+  server:
+    RonlabGameAssistant:
+      load: BEFORE
+      required: true

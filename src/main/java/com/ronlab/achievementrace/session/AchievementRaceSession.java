@@ -1,0 +1,298 @@
+package com.ronlab.achievementrace.session;
+
+import com.ronlab.achievementrace.AchievementRacePlugin;
+import com.ronlab.achievementrace.config.Settings;
+import com.ronlab.rga.api.RGASessionControl;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.NamedTextColor;
+import net.kyori.adventure.text.format.TextDecoration;
+import net.kyori.adventure.title.Title;
+import org.bukkit.Bukkit;
+import org.bukkit.NamespacedKey;
+import org.bukkit.Sound;
+import org.bukkit.World;
+import org.bukkit.advancement.Advancement;
+import org.bukkit.advancement.AdvancementProgress;
+import org.bukkit.entity.Player;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.HandlerList;
+import org.bukkit.event.Listener;
+import org.bukkit.event.entity.PlayerDeathEvent;
+import org.bukkit.event.player.PlayerAdvancementDoneEvent;
+import org.bukkit.scheduler.BukkitRunnable;
+import org.bukkit.scheduler.BukkitTask;
+import org.jspecify.annotations.NullMarked;
+import org.jspecify.annotations.Nullable;
+
+import java.time.Duration;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ThreadLocalRandom;
+
+/**
+ * Manages an active Achievement Race minigame session bound to a single world instance.
+ */
+@NullMarked
+public class AchievementRaceSession implements Listener {
+
+    private final AchievementRacePlugin plugin;
+    private final World world;
+    private final List<UUID> playerUuids;
+    private final int initialPlayerCount;
+    private final Map<UUID, Integer> playerScores = new ConcurrentHashMap<>();
+    private final Set<NamespacedKey> claimedAdvancements = Collections.newSetFromMap(new ConcurrentHashMap<>());
+    private final List<Advancement> activeAdvancementPool = new ArrayList<>();
+
+    private final Settings.GameMode gameMode;
+    private final int targetScore;
+    private final int matchDurationSeconds;
+
+    private @Nullable BukkitTask timerTask;
+    private int remainingSeconds;
+    private boolean active = false;
+
+    public AchievementRaceSession(AchievementRacePlugin plugin, World world, List<UUID> playerUuids) {
+        this.plugin = plugin;
+        this.world = world;
+        this.playerUuids = List.copyOf(playerUuids);
+        this.initialPlayerCount = playerUuids.size();
+
+        Settings settings = plugin.getSettings();
+        this.gameMode = settings.getMode();
+        this.targetScore = settings.getTargetScore();
+        this.matchDurationSeconds = settings.getMatchDurationSeconds();
+        this.remainingSeconds = matchDurationSeconds;
+
+        for (UUID uuid : playerUuids) {
+            playerScores.put(uuid, 0);
+        }
+
+        buildAdvancementPool(settings.getBlacklist());
+    }
+
+    private void buildAdvancementPool(Set<String> blacklist) {
+        Iterator<Advancement> iterator = Bukkit.advancementIterator();
+        while (iterator.hasNext()) {
+            Advancement adv = iterator.next();
+            NamespacedKey key = adv.getKey();
+
+            // Filter recipes
+            if (key.getKey().startsWith("recipes/")) {
+                continue;
+            }
+
+            // Filter blacklisted keys
+            String fullKey = key.toString().toLowerCase();
+            if (blacklist.contains(fullKey)) {
+                continue;
+            }
+
+            activeAdvancementPool.add(adv);
+        }
+        plugin.getLogger().info("Session for world '" + world.getName() + "' initialized with "
+                + activeAdvancementPool.size() + " active pool advancements.");
+    }
+
+    public void start() {
+        this.active = true;
+        Bukkit.getPluginManager().registerEvents(this, plugin);
+
+        if (gameMode == Settings.GameMode.HUNT || matchDurationSeconds > 0) {
+            startTimer();
+        }
+    }
+
+    public void stop() {
+        this.active = false;
+        if (timerTask != null && !timerTask.isCancelled()) {
+            timerTask.cancel();
+            timerTask = null;
+        }
+        HandlerList.unregisterAll(this);
+    }
+
+    private void startTimer() {
+        this.timerTask = new BukkitRunnable() {
+            @Override
+            public void run() {
+                if (!active) {
+                    cancel();
+                    return;
+                }
+
+                if (remainingSeconds <= 0) {
+                    cancel();
+                    concludeSession("Match time elapsed");
+                    return;
+                }
+
+                if (remainingSeconds == 60 || remainingSeconds == 30 || remainingSeconds == 10 || remainingSeconds <= 5) {
+                    broadcastMessage(Component.text("Time remaining: ", NamedTextColor.YELLOW)
+                            .append(Component.text(remainingSeconds + "s", NamedTextColor.GOLD, TextDecoration.BOLD)));
+                }
+
+                remainingSeconds--;
+            }
+        }.runTaskTimer(plugin, 20L, 20L);
+    }
+
+    /**
+     * Verifies and selects an uncompleted target advancement for a given player.
+     * Uses player.getAdvancementProgress(advancement) to prevent soft-locking on already completed advancements.
+     */
+    public @Nullable Advancement selectNextEligibleAdvancement(Player player) {
+        List<Advancement> candidatePool = new ArrayList<>();
+        for (Advancement adv : activeAdvancementPool) {
+            if (claimedAdvancements.contains(adv.getKey())) {
+                continue;
+            }
+            AdvancementProgress progress = player.getAdvancementProgress(adv);
+            if (!progress.isDone()) {
+                candidatePool.add(adv);
+            }
+        }
+
+        if (candidatePool.isEmpty()) {
+            return null;
+        }
+
+        return candidatePool.get(ThreadLocalRandom.current().nextInt(candidatePool.size()));
+    }
+
+    @EventHandler
+    public void onPlayerAdvancementDone(PlayerAdvancementDoneEvent event) {
+        if (!active) return;
+
+        Player player = event.getPlayer();
+        if (!player.getWorld().equals(world)) return;
+        if (!playerUuids.contains(player.getUniqueId())) return;
+
+        Advancement advancement = event.getAdvancement();
+        NamespacedKey key = advancement.getKey();
+
+        // Filter out recipes
+        if (key.getKey().startsWith("recipes/")) return;
+
+        // Check if advancement is in our active pool
+        boolean isInPool = activeAdvancementPool.stream().anyMatch(a -> a.getKey().equals(key));
+        if (!isInPool) return;
+
+        // Avoid double-awarding for same advancement if already claimed
+        if (!claimedAdvancements.add(key)) {
+            return;
+        }
+
+        // Award points
+        int newScore = playerScores.merge(player.getUniqueId(), 1, Integer::sum);
+        plugin.getLogger().info("Player " + player.getName() + " completed advancement " + key + " (New Score: " + newScore + ")");
+
+        // Sound & Title Broadcast
+        broadcastTitleAndSound(player, key);
+
+        // Win Condition Check
+        checkWinCondition(player, newScore);
+    }
+
+    @EventHandler
+    public void onPlayerDeath(PlayerDeathEvent event) {
+        if (!active) return;
+
+        Player player = event.getEntity();
+        if (!player.getWorld().equals(world)) return;
+        if (!playerUuids.contains(player.getUniqueId())) return;
+
+        plugin.getLogger().info("Player " + player.getName() + " died in session world '" + world.getName() + "'. Transitioning to spectator mode.");
+
+        RGASessionControl sessionControl = plugin.getRgasessionControl();
+        if (sessionControl != null) {
+            sessionControl.setSpectator(player, true);
+        } else {
+            // Fallback attempt via RGA main plugin instance if available
+            try {
+                Object rgaInstance = Bukkit.getPluginManager().getPlugin("RonlabGameAssistant");
+                if (rgaInstance instanceof RGASessionControl sc) {
+                    sc.setSpectator(player, true);
+                }
+            } catch (Exception e) {
+                plugin.getLogger().warning("Failed to delegate spectator transition for " + player.getName() + ": " + e.getMessage());
+            }
+        }
+    }
+
+    private void checkWinCondition(Player player, int currentScore) {
+        if (gameMode == Settings.GameMode.RACE) {
+            if (currentScore >= targetScore) {
+                // CPMK Solo QA Guard
+                if (initialPlayerCount == 1) {
+                    plugin.getLogger().info("[CPM] Single-player testing mode detected; suppressing automatic 0-opponent win condition for player " + player.getName());
+                    broadcastMessage(Component.text("[QA Guard] Target score reached in single-player test mode.", NamedTextColor.LIGHT_PURPLE));
+                    return;
+                }
+
+                concludeSession("Target score of " + targetScore + " reached by " + player.getName());
+            }
+        }
+    }
+
+    private void concludeSession(String reason) {
+        if (!active) return;
+        this.active = false;
+
+        plugin.getLogger().info("Session in world '" + world.getName() + "' concluding. Reason: " + reason);
+
+        RGASessionControl sessionControl = plugin.getRgasessionControl();
+        if (sessionControl != null) {
+            sessionControl.requestSessionConclude(world.getName(), reason, playerScores);
+        } else {
+            try {
+                Object rgaInstance = Bukkit.getPluginManager().getPlugin("RonlabGameAssistant");
+                if (rgaInstance instanceof RGASessionControl sc) {
+                    sc.requestSessionConclude(world.getName(), reason, playerScores);
+                }
+            } catch (Exception e) {
+                plugin.getLogger().severe("Failed to request session conclude from RGA: " + e.getMessage());
+            }
+        }
+    }
+
+    private void broadcastTitleAndSound(Player completedPlayer, NamespacedKey advancementKey) {
+        Component titleComp = Component.text("Advancement Completed!", NamedTextColor.GOLD, TextDecoration.BOLD);
+        Component subComp = Component.text(completedPlayer.getName() + " completed ", NamedTextColor.YELLOW)
+                .append(Component.text(advancementKey.getKey(), NamedTextColor.GREEN));
+
+        Title title = Title.title(titleComp, subComp, Title.Times.times(
+                Duration.ofMillis(300),
+                Duration.ofMillis(2000),
+                Duration.ofMillis(500)
+        ));
+
+        for (UUID uuid : playerUuids) {
+            Player p = Bukkit.getPlayer(uuid);
+            if (p != null && p.isOnline() && p.getWorld().equals(world)) {
+                p.showTitle(title);
+                p.playSound(p.getLocation(), Sound.UI_TOAST_CHALLENGE_COMPLETE, 1.0f, 1.0f);
+            }
+        }
+    }
+
+    private void broadcastMessage(Component message) {
+        for (UUID uuid : playerUuids) {
+            Player p = Bukkit.getPlayer(uuid);
+            if (p != null && p.isOnline() && p.getWorld().equals(world)) {
+                p.sendMessage(message);
+            }
+        }
+    }
+
+    public Map<UUID, Integer> getPlayerScores() {
+        return Collections.unmodifiableMap(playerScores);
+    }
+
+    public World getWorld() {
+        return world;
+    }
+
+    public boolean isActive() {
+        return active;
+    }
+}

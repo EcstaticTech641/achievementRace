@@ -1,0 +1,7 @@
+# Achievement Race Configuration Settings
+mode: RACE
+target-score: 5
+match-duration-seconds: 300
+blacklist:
+  - 'minecraft:husbandry/allay_deliver_cake_to_note_block'
+  - 'minecraft:nether/all_potions'
