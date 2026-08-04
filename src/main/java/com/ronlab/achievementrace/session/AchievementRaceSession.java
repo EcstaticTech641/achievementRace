@@ -2,6 +2,7 @@ package com.ronlab.achievementrace.session;
 
 import com.ronlab.achievementrace.AchievementRacePlugin;
 import com.ronlab.achievementrace.config.Settings;
+import com.ronlab.achievementrace.ui.AchievementScoreboard;
 import com.ronlab.rga.api.RGASessionControl;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
@@ -47,7 +48,11 @@ public class AchievementRaceSession implements Listener {
     private final int targetScore;
     private final int matchDurationSeconds;
 
+    private final AchievementPromptManager promptManager;
+    private final AchievementScoreboard scoreboard;
+
     private @Nullable BukkitTask timerTask;
+    private @Nullable BukkitTask hudTask;
     private int remainingSeconds;
     private boolean active = false;
 
@@ -68,6 +73,8 @@ public class AchievementRaceSession implements Listener {
         }
 
         buildAdvancementPool(settings.getBlacklist());
+        this.promptManager = new AchievementPromptManager(activeAdvancementPool);
+        this.scoreboard = new AchievementScoreboard(targetScore, playerScores);
     }
 
     private void buildAdvancementPool(Set<String> blacklist) {
@@ -97,9 +104,16 @@ public class AchievementRaceSession implements Listener {
         this.active = true;
         Bukkit.getPluginManager().registerEvents(this, plugin);
 
+        // Select initial objective prompt
+        promptManager.rotateObjective(getOnlinePlayers());
+
+        // Start countdown timer if applicable
         if (gameMode == Settings.GameMode.HUNT || matchDurationSeconds > 0) {
             startTimer();
         }
+
+        // Start Action Bar HUD & Scoreboard update ticker
+        startHudTicker();
     }
 
     public void stop() {
@@ -108,6 +122,11 @@ public class AchievementRaceSession implements Listener {
             timerTask.cancel();
             timerTask = null;
         }
+        if (hudTask != null && !hudTask.isCancelled()) {
+            hudTask.cancel();
+            hudTask = null;
+        }
+        scoreboard.resetPlayers(getOnlinePlayers());
         HandlerList.unregisterAll(this);
     }
 
@@ -134,6 +153,48 @@ public class AchievementRaceSession implements Listener {
                 remainingSeconds--;
             }
         }.runTaskTimer(plugin, 20L, 20L);
+    }
+
+    private void startHudTicker() {
+        this.hudTask = new BukkitRunnable() {
+            @Override
+            public void run() {
+                if (!active) {
+                    cancel();
+                    return;
+                }
+
+                Collection<Player> players = getOnlinePlayers();
+                if (promptManager.getCurrentObjective() == null) {
+                    promptManager.rotateObjective(players);
+                }
+                String objName = promptManager.getCurrentObjectiveDisplayName();
+
+                // Update Scoreboard UI
+                scoreboard.update(objName, remainingSeconds, players);
+
+                // Send Action Bar HUD
+                Component actionBar = Component.text("Objective: ", NamedTextColor.GOLD)
+                        .append(Component.text(objName, NamedTextColor.GREEN, TextDecoration.BOLD))
+                        .append(Component.text(" | Target: ", NamedTextColor.GRAY))
+                        .append(Component.text(targetScore + " pts", NamedTextColor.YELLOW));
+
+                for (Player player : players) {
+                    player.sendActionBar(actionBar);
+                }
+            }
+        }.runTaskTimer(plugin, 10L, 20L);
+    }
+
+    public Collection<Player> getOnlinePlayers() {
+        List<Player> players = new ArrayList<>();
+        for (UUID uuid : playerUuids) {
+            Player p = Bukkit.getPlayer(uuid);
+            if (p != null && p.isOnline() && p.getWorld().equals(world)) {
+                players.add(p);
+            }
+        }
+        return players;
     }
 
     /**
@@ -186,8 +247,18 @@ public class AchievementRaceSession implements Listener {
         int newScore = playerScores.merge(player.getUniqueId(), 1, Integer::sum);
         plugin.getLogger().info("Player " + player.getName() + " completed advancement " + key + " (New Score: " + newScore + ")");
 
+        // Update Scoreboard State
+        scoreboard.updatePlayerScore(player.getUniqueId(), newScore);
+
+        // Mark objective completed and rotate to next prompt
+        promptManager.markCompleted(advancement);
+        promptManager.rotateObjective(getOnlinePlayers());
+
         // Sound & Title Broadcast
         broadcastTitleAndSound(player, key);
+
+        // Update UI immediately
+        scoreboard.update(promptManager.getCurrentObjectiveDisplayName(), remainingSeconds, getOnlinePlayers());
 
         // Win Condition Check
         checkWinCondition(player, newScore);
@@ -207,7 +278,6 @@ public class AchievementRaceSession implements Listener {
         if (sessionControl != null) {
             sessionControl.setSpectator(player, true);
         } else {
-            // Fallback attempt via RGA main plugin instance if available
             try {
                 Object rgaInstance = Bukkit.getPluginManager().getPlugin("RonlabGameAssistant");
                 if (rgaInstance instanceof RGASessionControl sc) {
@@ -294,5 +364,9 @@ public class AchievementRaceSession implements Listener {
 
     public boolean isActive() {
         return active;
+    }
+
+    public AchievementPromptManager getPromptManager() {
+        return promptManager;
     }
 }
