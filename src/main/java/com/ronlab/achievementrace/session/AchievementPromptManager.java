@@ -3,7 +3,9 @@ package com.ronlab.achievementrace.session;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.format.TextDecoration;
+import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.advancement.Advancement;
+import io.papermc.paper.advancement.AdvancementDisplay;
 import org.bukkit.advancement.AdvancementProgress;
 import org.bukkit.entity.Player;
 import org.jspecify.annotations.NullMarked;
@@ -75,12 +77,48 @@ public class AchievementPromptManager {
         return currentObjective;
     }
 
+    /**
+     * Parses and returns the descriptive instruction criteria ("how to get") of the current objective.
+     * Uses PlainTextComponentSerializer to safely convert Kyori Adventure Components into plain text.
+     * Falls back to key name if description is null or empty.
+     */
+    public String getCurrentObjectiveDescription() {
+        if (currentObjective == null) {
+            return "None Available";
+        }
+
+        AdvancementDisplay display = currentObjective.getDisplay();
+        if (display != null && display.description() != null) {
+            String descriptionText = PlainTextComponentSerializer.plainText().serialize(display.description()).trim();
+            if (!descriptionText.isBlank()) {
+                return descriptionText;
+            }
+        }
+
+        return getFallbackKeyName(currentObjective);
+    }
+
+    /**
+     * Returns the advancement display title or fallback key name.
+     */
     public String getCurrentObjectiveDisplayName() {
         if (currentObjective == null) {
             return "None Available";
         }
-        String key = currentObjective.getKey().getKey();
-        // Format e.g. "story/mine_stone" or "mine_stone" to "Mine Stone"
+
+        AdvancementDisplay display = currentObjective.getDisplay();
+        if (display != null && display.title() != null) {
+            String titleText = PlainTextComponentSerializer.plainText().serialize(display.title()).trim();
+            if (!titleText.isBlank()) {
+                return titleText;
+            }
+        }
+
+        return getFallbackKeyName(currentObjective);
+    }
+
+    private String getFallbackKeyName(Advancement adv) {
+        String key = adv.getKey().getKey();
         int lastSlash = key.lastIndexOf('/');
         if (lastSlash != -1) {
             key = key.substring(lastSlash + 1);
@@ -96,6 +134,6 @@ public class AchievementPromptManager {
     }
 
     public Component getCurrentObjectiveComponent() {
-        return Component.text(getCurrentObjectiveDisplayName(), NamedTextColor.GREEN, TextDecoration.BOLD);
+        return Component.text(getCurrentObjectiveDescription(), NamedTextColor.GREEN, TextDecoration.BOLD);
     }
 }

@@ -39,7 +39,11 @@ public class Settings {
         this.blacklist = new HashSet<>();
         for (String key : rawBlacklist) {
             if (key != null && !key.isBlank()) {
-                this.blacklist.add(key.trim().toLowerCase());
+                String trimmed = key.trim().toLowerCase();
+                if (!trimmed.contains(":")) {
+                    trimmed = "minecraft:" + trimmed;
+                }
+                this.blacklist.add(trimmed);
             }
         }
     }

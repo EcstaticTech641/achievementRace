@@ -72,32 +72,10 @@ public class AchievementRaceSession implements Listener {
             playerScores.put(uuid, 0);
         }
 
-        buildAdvancementPool(settings.getBlacklist());
+        AdvancementPoolManager poolManager = new AdvancementPoolManager(plugin, settings.getBlacklist());
+        this.activeAdvancementPool.addAll(poolManager.buildActivePool());
         this.promptManager = new AchievementPromptManager(activeAdvancementPool);
         this.scoreboard = new AchievementScoreboard(targetScore, playerScores);
-    }
-
-    private void buildAdvancementPool(Set<String> blacklist) {
-        Iterator<Advancement> iterator = Bukkit.advancementIterator();
-        while (iterator.hasNext()) {
-            Advancement adv = iterator.next();
-            NamespacedKey key = adv.getKey();
-
-            // Filter recipes
-            if (key.getKey().startsWith("recipes/")) {
-                continue;
-            }
-
-            // Filter blacklisted keys
-            String fullKey = key.toString().toLowerCase();
-            if (blacklist.contains(fullKey)) {
-                continue;
-            }
-
-            activeAdvancementPool.add(adv);
-        }
-        plugin.getLogger().info("Session for world '" + world.getName() + "' initialized with "
-                + activeAdvancementPool.size() + " active pool advancements.");
     }
 
     public void start() {
@@ -168,15 +146,15 @@ public class AchievementRaceSession implements Listener {
                 if (promptManager.getCurrentObjective() == null) {
                     promptManager.rotateObjective(players);
                 }
-                String objName = promptManager.getCurrentObjectiveDisplayName();
+                String descriptionText = promptManager.getCurrentObjectiveDescription();
 
                 // Update Scoreboard UI
-                scoreboard.update(objName, remainingSeconds, players);
+                scoreboard.update(descriptionText, remainingSeconds, players);
 
                 // Send Action Bar HUD
-                Component actionBar = Component.text("Objective: ", NamedTextColor.GOLD)
-                        .append(Component.text(objName, NamedTextColor.GREEN, TextDecoration.BOLD))
-                        .append(Component.text(" | Target: ", NamedTextColor.GRAY))
+                Component actionBar = Component.text("Target: ", NamedTextColor.GOLD)
+                        .append(Component.text(descriptionText, NamedTextColor.GREEN, TextDecoration.BOLD))
+                        .append(Component.text(" | Goal: ", NamedTextColor.GRAY))
                         .append(Component.text(targetScore + " pts", NamedTextColor.YELLOW));
 
                 for (Player player : players) {
@@ -258,7 +236,7 @@ public class AchievementRaceSession implements Listener {
         broadcastTitleAndSound(player, key);
 
         // Update UI immediately
-        scoreboard.update(promptManager.getCurrentObjectiveDisplayName(), remainingSeconds, getOnlinePlayers());
+        scoreboard.update(promptManager.getCurrentObjectiveDescription(), remainingSeconds, getOnlinePlayers());
 
         // Win Condition Check
         checkWinCondition(player, newScore);

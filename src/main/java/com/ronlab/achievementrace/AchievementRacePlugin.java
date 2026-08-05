@@ -67,13 +67,19 @@ public class AchievementRacePlugin extends JavaPlugin {
     }
 
     public void loadSettings() {
+        File configFile = new File(getDataFolder(), "config.yml");
+        if (!configFile.exists()) {
+            saveResource("config.yml", false);
+        }
         File settingsFile = new File(getDataFolder(), "settings.yml");
         if (!settingsFile.exists()) {
             saveResource("settings.yml", false);
         }
-        YamlConfiguration config = YamlConfiguration.loadConfiguration(settingsFile);
+
+        File targetConfig = configFile.exists() ? configFile : settingsFile;
+        YamlConfiguration config = YamlConfiguration.loadConfiguration(targetConfig);
         this.settings = new Settings(config);
-        getLogger().info("Loaded settings.yml (Mode: " + settings.getMode() + ", Target Score: " + settings.getTargetScore() + ")");
+        getLogger().info("Loaded " + targetConfig.getName() + " (Mode: " + settings.getMode() + ", Target Score: " + settings.getTargetScore() + ", Blacklist: " + settings.getBlacklist().size() + " items)");
     }
 
     public static AchievementRacePlugin getInstance() {

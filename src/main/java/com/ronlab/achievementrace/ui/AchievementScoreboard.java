@@ -94,6 +94,11 @@ public class AchievementScoreboard {
                 player.setScoreboard(main);
             }
         }
+        try {
+            objective.unregister();
+        } catch (IllegalStateException ignored) {
+            // Objective already unregistered
+        }
     }
 
     private String truncate(String text, int maxLength) {
